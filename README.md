@@ -125,11 +125,192 @@ Great! Your Kafka environment is ready to be used. The next step is to jump into
 ![image](https://user-images.githubusercontent.com/29863643/201309771-a692e7e4-f916-45d5-8cd3-c2507a53f01d.png)
 
 
-In the following window, make sure to give the solution a different name, as shown in Figure 9. This is because both consumer and producer projects will coexist within the same solution.
+Add empty solution then add 2 api projects 1 for producer 2 for consumer
+![image](https://user-images.githubusercontent.com/29863643/201341299-e1382740-f7bf-4fac-8932-6e75da30efb6.png)
+ # NuGet Packages
+ 
+ To make your C# code understand how to produce and consume messages, you need a client for Kafka. The most used client today is Confluent’s Kafka .NET Client.
+
+To install it, right-click the solution and select the Manage NuGet Packages for Solution… option. Type Confluent in the search box and select the Confluent.Kafka option, as shown 
+
+Select both projects and click Install. Alternatively, you can add them via command line:
 
 
 ```ruby
-{
-   
-}
+PM> Install-Package Confluent.Kafka
 ```
+
+![image](https://user-images.githubusercontent.com/29863643/201341961-c577c531-67f4-4dc2-ad97-575684147dd7.png)
+
+Setting Up the Consumer
+Now to implement the consumer project. Although it is a REST-like application, the consumer is not required. You can have any type of .NET project listening to topic messages.
+
+The project already contains a Controllers folder. You need to create a new one called Handlers and add a new class called KafkaConsumerHandler.cs to it.
+
+Listing 2 shows the new class code content.
+
+This handler must run in a separate thread since it will eternally watch for incoming messages within a while loop. Therefore, it’s making use of Async Tasks in this class.
+
+Pay attention to the topic name and consumer configs. They match exactly what was set in your docker-compose.yml file. Make sure to double-check your typing here, since divergences can lead to some blind errors.
+
+```ruby
+using Confluent.Kafka;
+using Microsoft.Extensions.Hosting;
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+namespace ST_KafkaConsumer.Handlers
+{
+    public class KafkaConsumerHandler : IHostedService
+    {
+        private readonly string topic = "simpletalk_topic";
+        public Task StartAsync(CancellationToken cancellationToken)
+        {
+            var conf = new ConsumerConfig
+            {
+                GroupId = "st_consumer_group",
+                BootstrapServers = "localhost:9092",
+                AutoOffsetReset = AutoOffsetReset.Earliest
+            };
+            using (var builder = new ConsumerBuilder<Ignore, 
+                string>(conf).Build())
+            {
+                builder.Subscribe(topic);
+                var cancelToken = new CancellationTokenSource();
+                try
+                {
+                    while (true)
+                    {
+                        var consumer = builder.Consume(cancelToken.Token);
+                        Console.WriteLine($"Message: {consumer.Message.Value} received from {consumer.TopicPartitionOffset}");
+                    }
+                }
+                catch (Exception)
+                {
+                    builder.Close();
+                }
+            }
+            return Task.CompletedTask;
+        }
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+    }
+}
+
+```
+The consumer group id can be anything you want. Usually, they receive intuitive names to help with maintenance and troubleshooting.
+
+Whenever a new message is published to the simpletalk_topic topic, this consumer will consume it and log it to the console. Of course, in real-world apps, you’d make better use of this data.
+
+You also need to add this hosted service class to the Startup class. So, open it and add the following code line to the ConfigureServices method:
+
+services.AddSingleton<IHostedService, KafkaConsumerHandler>();
+Make sure to import the proper using at the beginning of the class as well:
+
+# Setting Up the Producer
+Moving on to the producer, things will be handled a bit differently here. Since there’s no need for infinite loops to listen to messages arriving, the producers can simply publish messages from anywhere, even from the controllers. In a real application, it’d be better to have this type of code separate from the MVC layers, but this example sticks to the controllers to keep it simple.
+
+Create a new class called KafkaProducerController.cs in the Controllers folder and add the content of Listing 3 to it.
+
+
+
+
+
+
+
+
+
+```ruby
+using System;
+using Confluent.Kafka;
+using Microsoft.AspNetCore.Mvc;
+namespace Kafka.Producer.API.Controllers
+{
+    [Route("api/kafka")]
+    [ApiController]
+    public class KafkaProducerController : ControllerBase
+    {
+        private readonly ProducerConfig config = new ProducerConfig 
+                             { BootstrapServers = "localhost:9092" };
+        private readonly string topic = "simpletalk_topic";
+        [HttpPost]
+        public IActionResult Post([FromQuery] string message)
+        {
+            return Created(string.Empty, SendToKafka(topic, message));
+        }
+        private Object SendToKafka(string topic, string message)
+        {
+            using (var producer = 
+                 new ProducerBuilder<Null, string>(config).Build())
+            {
+                try
+                {
+                    return producer.ProduceAsync(topic, new Message<Null, string> { Value = message })
+                        .GetAwaiter()
+                        .GetResult();
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"Oops, something went wrong: {e}");
+                }
+            }
+            return null;
+        }
+    }
+}
+
+```
+
+The producer code is much simpler than the consumer code. Confluent’s ProducerBuilder class takes care of creating a fully functional Kafka producer based on the provided config options, Kafka server, and topic name.
+
+It’s important to remember that the whole process is asynchronous. However, you can use Confluent’s API to retrieve the awaiter object and then the result that will be returned from the API method. The Message object, in turn, encapsulates the message key and content, respectively. Keys are optional in topics, while the content can be of any type (provided in the second generic argument).
+
+Testing
+To test this example, you need to run the producer and consumer applications separately. In the upper toolbar, locate the Startup Projects combo box and select the Consumer project
+
+![image](https://user-images.githubusercontent.com/29863643/201344285-34d5cea9-5314-4e47-bb78-50f2db81cf5f.png)
+
+
+Pay attention to the URL and port in which it is running.
+
+Now is time to send some messages via producer API. To do this, you can use any API testing tool such as Postman, for example. However, this example will stick to cURL for the sake of simplicity.
+
+For the following commands to work properly, you must ensure that the Docker images are working. So, before running into them, make sure to execute docker ps again to check that out. Sometimes, restarting the computer stops these processes.
+
+![image](https://user-images.githubusercontent.com/29863643/201345500-f921d2dc-f29f-4b79-975c-6553a0d29995.png)
+
+![image](https://user-images.githubusercontent.com/29863643/201345545-00be7011-c233-47dc-8171-c1164c2040aa.png)
+If the command doesn’t log anything, run the docker-compose up once more.
+
+To test the publish-subscribe message, open another cmd window and issue the following command:
+
+```ruby
+curl -H "Content-Length: 0" -X POST "http://localhost:51249/api/kafka?message=Hello,kafka!"
+
+
+```
+
+This request will arrive at the producer API and trigger the publish of a new message to Kafka.
+
+To check if the consumer received it, you may locate the Output window and select the option ST-KafkaConsumer 
+
+
+Using Apache Kafka with .NET
+Pretty nice, isn’t it? What about you? Have you ever used Kafka for your projects? How was your experience with it?
+
+Kafka is a flexible and robust tool that allows for strong implementations in many types of projects, reason number one why it is so widely adopted.
+
+This article was just a brief introduction to its world, but there’s much more to see like Kafka Streams, working in the cloud, and more complex scenarios from the real world. In the next article, I’ll explore Kafka’s capabilities. Let’s go together!
+
+
+
+
+
+
+
+[Consider supporting me by buying me a coffee](https://www.buymeacoffee.com/MAhmoudKhalifa)
+![bmc_qr](https://user-images.githubusercontent.com/29863643/201290985-b519f0ee-a842-414b-b05e-63714b5b8ff3.png)
+
+all the informations is collected from the open source projects and blogs :)
